@@ -5,8 +5,8 @@ using Verse.AI;
 namespace DigitalStorage.HarmonyPatches
 {
     /// <summary>
-    /// 防御 patch（原版 null 缺陷）：PawnCanAutomaticallyHaul 对未 Spawned 物品
-    /// （t.Map == null）会在 t.Position.Fogged(t.Map) 处直接 NRE——
+    /// 防御 patch（原版 null 缺陷）：<c>PawnCanAutomaticallyHaul</c> 对未 Spawned 物品
+    /// （<c>t.Map == null</c>）会在 <c>t.Position.Fogged(t.Map)</c> 处直接 NRE——
     /// GridsUtility.Fogged(IntVec3, Map) 无 null 检查（HaulAIUtility.cs:48）。
     /// 触发者：本 mod 的 GhostThing 不 Spawn 却挂进 listerThings.listsByDef
     /// （供其他 mod 扫描核心库存），原版 WorkGiver_CookFillHopper.HopperFillFoodJob
@@ -34,8 +34,8 @@ namespace DigitalStorage.HarmonyPatches
     }
 
     /// <summary>
-    /// 同款防御：PawnCanAutomaticallyHaulFast_NewTemp 行 82 的 t.Fogged() 展开即
-    /// <c>t.MapHeld.fogGrid.IsFogged(t.PositionHeld)</c>（GridsUtility.cs:86，无 Spawned 守卫），
+    /// 同款防御：<c>PawnCanAutomaticallyHaulFast_NewTemp</c> 行 82 的 <c>t.Fogged()</c> 展开即
+    /// <c>t.MapHeld.fogGrid.IsFogged(t.PositionHeld)</c>（GridsUtility.cs:86-89，无 null 检查），
     /// MapHeld 为 null 时 NRE。
     ///
     /// ⚠️ 守卫必须是 <b>t.MapHeld == null</b>，<b>不能</b>是 !t.Spawned。
@@ -45,11 +45,46 @@ namespace DigitalStorage.HarmonyPatches
     ///   → WorkGiver_Haul.JobOnThing:26 → PawnCanAutomaticallyHaulFast
     /// 用 !t.Spawned 会把内容物一律挡掉：容器里被过滤器排除的物品永远搬不出来
     /// （甲-1 静默失效，且只在主仓补丁与 4.0 数据层同时加载时才暴露）。
+    ///
+    /// <para><b>⚠️ 2026-10-06 修正挂点：必须挂 4 参的 <c>_NewTemp</c>，不能挂 3 参壳。</b>
+    /// 原版 1.6.4871 的实际形状（反编译 Assembly-CSharp.dll 核实）：
+    /// <code>
+    /// public static bool PawnCanAutomaticallyHaulFast(Pawn p, Thing t, bool forced)
+    ///     =&gt; PawnCanAutomaticallyHaulFast_NewTemp(p, t, forced);            // 3 参转发壳
+    /// public static bool PawnCanAutomaticallyHaulFast_NewTemp(Pawn p, Thing t, bool forced,
+    ///                                                         bool checkReachability = true)
+    /// {
+    ///     if (t.Fogged()) return false;                                      // ← 崩溃点（行 82）
+    ///     ...
+    /// }
+    /// </code>
+    /// 全程序集的调用点分布（IL 扫描，共 6 处）：
+    /// <list type="bullet">
+    /// <item><c>HaulAIUtility.PawnCanAutomaticallyHaul</c> → <c>_NewTemp</c>（绕过）</item>
+    /// <item><c>HaulAIUtility.PawnCanAutomaticallyHaulFast</c> → <c>_NewTemp</c>（转发壳本体）</item>
+    /// <item><c>Pawn_JobTracker.TryOpportunisticJob:700</c> → <c>_NewTemp</c>（<b>顺路搬运，实际崩的就是这条</b>）</item>
+    /// <item><c>JobGiver_Haul.TryGiveJob</c> 内联校验 → <c>_NewTemp</c>（绕过）</item>
+    /// <item><c>WorkGiver_ConstructDeliverResources.ResourceValidator_NewTemp</c> → <c>_NewTemp</c>（绕过）</item>
+    /// <item><c>WorkGiver_Haul.JobOnThing:26</c> → 3 参壳（**唯一**走壳的调用点）</item>
+    /// </list>
+    /// 也就是说：挂 3 参壳时，这个守卫对**六分之五**的调用点完全无效，其中就包括
+    /// <c>TryOpportunisticJob</c>——它遍历 <c>listerHaulables.ThingsPotentiallyNeedingHauling()</c>，
+    /// 而本 mod 的 <c>Building_StorageCore</c> 是 <c>IHaulSource</c>，核心内容物会被原版
+    /// 登记进那张表；一旦其中有 <c>MapHeld == null</c> 的坏件，<b>每次给小人派任何新任务的瞬间</b>
+    /// （<c>StartJob</c> 早期就调 <c>TryOpportunisticJob</c>）都会 NRE ⇒ 派活中断 ⇒ 小人原地反复
+    /// 在「站立中 ↔ 取食/睡觉/清洁」之间跳、最终饿死。<b>用户实测日志</b>：
+    /// <c>at Verse.GridsUtility.Fogged</c> + <c>at HaulAIUtility.PawnCanAutomaticallyHaulFast_NewTemp [0x00000]</c>
+    /// + <c>at Pawn_JobTracker.TryOpportunisticJob</c>，栈上**没有**本 mod 的 PREFIX
+    /// （同栈 Nanosuit 的 PREFIX 正常打印）⇒ 守卫确实没拦到。
+    ///
+    /// <para><b>为什么这不是"文件漏编"</b>：3 参 <c>PawnCanAutomaticallyHaulFast</c> 在 1.6.4871 里
+    /// <b>确实存在</b>，所以 Harmony 挂载**成功、零报错**，自检行照常显示满员 —— 属于最难发现的一类
+    /// 静默失效。改挂 <c>_NewTemp</c> 后 6 个调用点全部覆盖（转发壳内部也调 <c>_NewTemp</c>）。</para>
     /// </summary>
-    [HarmonyPatch(typeof(HaulAIUtility), "PawnCanAutomaticallyHaulFast")]
+    [HarmonyPatch(typeof(HaulAIUtility), "PawnCanAutomaticallyHaulFast_NewTemp")]
     static class Patch_HaulAIUtility_PawnCanAutomaticallyHaulFast
     {
-        static bool Prefix(Pawn p, Thing t, bool forced, ref bool __result)
+        static bool Prefix(Pawn p, Thing t, bool forced, bool checkReachability, ref bool __result)
         {
             if (p == null || t == null || t.MapHeld == null)
             {

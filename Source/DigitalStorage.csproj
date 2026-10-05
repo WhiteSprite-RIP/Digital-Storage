@@ -10,6 +10,14 @@
     <AssemblyName>DigitalStorage</AssemblyName>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
+    <!-- 可覆盖的引用路径：默认值 = 作者的开发机；换机器时用命令行/环境变量覆盖，不必改仓库。
+         例：dotnet build Source\DigitalStorage.csproj -c Release `
+               -p:RimWorldManagedDir="D:\Steam\steamapps\common\RimWorld\RimWorldWin64_Data\Managed" `
+               -p:FrameworkReferenceDir="<解包后的 Microsoft.NETFramework.ReferenceAssemblies.net472\build\.NETFramework\v4.7.2>"
+         （后一个只在机器上没装 .NET Framework 4.7.2 开发包的机器上才需要。） -->
+    <RimWorldManagedDir Condition=" '$(RimWorldManagedDir)' == '' ">$(MSBuildProjectDirectory)\..\..\..\..\..\..\..\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed</RimWorldManagedDir>
+    <HarmonyPath Condition=" '$(HarmonyPath)' == '' ">$(MSBuildProjectDirectory)\..\Assemblies\0Harmony.dll</HarmonyPath>
+    <FrameworkReferenceDir Condition=" '$(FrameworkReferenceDir)' == '' ">$(TargetFrameworkRootPath)$(TargetFrameworkIdentifier)\$(TargetFrameworkVersion.TrimStart('v'))</FrameworkReferenceDir>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -34,26 +42,49 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
-      <HintPath>..\Assemblies\0Harmony.dll</HintPath>
+      <HintPath>$(HarmonyPath)</HintPath>
     </Reference>
     <Reference Include="Assembly-CSharp">
-      <HintPath>..\..\..\..\..\..\..\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <HintPath>$(RimWorldManagedDir)\Assembly-CSharp.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>..\..\..\..\..\..\..\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(RimWorldManagedDir)\UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
-      <HintPath>..\..\..\..\..\..\..\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
+      <HintPath>$(RimWorldManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
-      <HintPath>..\..\..\..\..\..\..\SteamLibrary\steamapps\common\RimWorld\RimWorldWin64_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+      <HintPath>$(RimWorldManagedDir)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="System" />
-    <Reference Include="System.Core" />
+    <!-- ⚠️ 这五个必须显式写 HintPath。
+         在没装「.NET Framework 4.7.2 开发包」的机器上（只有 SDK + 参考程序集 NuGet 包），
+         MSBuild 解析不带 HintPath 的 <Reference Include="System" /> 会失败：
+         它去找 RedistList\FrameworkList.xml，而那个文件不在包里 ⇒ 报 MSB3644「找不到参考程序集」。
+         给了 HintPath 就完全绕开框架解析。装了开发包的机器上这两个路径同样有效。 -->
+    <Reference Include="mscorlib">
+      <HintPath>$(FrameworkReferenceDir)\mscorlib.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System">
+      <HintPath>$(FrameworkReferenceDir)\System.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(FrameworkReferenceDir)\System.Core.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Xml">
+      <HintPath>$(FrameworkReferenceDir)\System.Xml.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Drawing">
+      <HintPath>$(FrameworkReferenceDir)\System.Drawing.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <AppDesigner Include="Properties\" />
