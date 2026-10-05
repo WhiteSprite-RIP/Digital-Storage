@@ -17,3 +17,6 @@ Source/.sonarqube/
 
 # 图标转换的中间产物（真正的成品在 Textures/UI/Gizmos/，源文件是 Tools/svg2png/icons/*.svg）
 Tools/svg2png/out/
+
+# IDE
+Source/.idea
