@@ -99,7 +99,7 @@
   <DS_BA_BenchBusy>殖民者正在使用这台工作台</DS_BA_BenchBusy>
   <DS_BA_Block_Material>缺料（核心里的材料不足）</DS_BA_Block_Material>
   <DS_BA_Block_Skill>资质不够（配方要求更高技能）</DS_BA_Block_Skill>
-  <DS_BA_Block_Restricted>这条 bill 限定给特定小人，代理不抢</DS_BA_Block_Restricted>
+  <DS_BA_Block_Restricted>这条配方不允许这个工人开工（限定小人 / 仅机械师）</DS_BA_Block_Restricted>
   <DS_BA_Block_Spot>工作台的站位格被堵住或被禁止</DS_BA_Block_Spot>
   <DS_BA_AddTitle>添加制作配方（范围内工作台能做的）</DS_BA_AddTitle>
   <DS_BA_Forever>无限</DS_BA_Forever>

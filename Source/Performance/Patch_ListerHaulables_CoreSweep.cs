@@ -48,6 +48,15 @@ namespace DigitalStorage.Performance
     /// ② 核心属于玩家阵营（否则 <c>IsInValidBestStorage</c> 的阵营闸门会让**所有**内容物变成"可搬运"）；
     /// ③ 没有更高优先级的目的地。<b>本补丁只做减法，不做加法。</b></para>
     ///
+    /// <para><b>第四种情形（2026-10-10 加）</b>：源被关掉或断电时 <c>HaulSourceEnabled == false</c>
+    /// （<c>Building_StorageCore.HaulSourceEnabled = 开关 &amp;&amp; IsUsableNow</c>，而后者含
+    /// <c>Powered</c>），原版 <c>ShouldBeHaulable</c> 的最后一道门
+    /// —— <c>t.ParentHolder is IHaulSource { HaulSourceEnabled: false }</c>（<c>ListerHaulables.cs:215</c>）
+    /// —— 对**每一件**内容物都返回 false，与目的地、与过滤器都无关 ⇒ 正确答案是"全部 Remove"。
+    /// 不单独处理它的话，断电的核心会落进下面 <c>!core.Accepts(t)</c> 那条"退回原版"分支
+    /// （断电后 <c>Accepts</c> 恒假），于是每 tick 对满核心逐件跑一次完整储存搜索
+    /// —— 恰好是这个补丁要消掉的那笔开销。</para>
+    ///
     /// <para>挂点选在 <c>RecalculateAllInHaulSource</c>（而不是 <c>HaulSourcesCheckTick</c>）：
     /// 后者是本轮轮转的私有方法，前者是"重算一个源的**全部**内容物"的唯一入口，语义更清楚，
     /// 而且事件路径（<c>StorageSettings.Priority</c> setter）与轮转路径共用它 —— 两条都覆盖到了。
@@ -82,7 +91,16 @@ namespace DigitalStorage.Performance
                 if (!core.Spawned || core.Map == null) return true;
                 if (core.Faction != Faction.OfPlayer) return true;
 
-                if (HasStrictlyBetterDestination(core))
+                // 源被关掉 / 断电：`HaulSourceEnabled = 开关 && IsUsableNow`（含 Powered），
+                // 而 `ShouldBeHaulable` 的最后一道门是
+                // `t.ParentHolder is IHaulSource { HaulSourceEnabled: false }`（ListerHaulables.cs:215）
+                // —— 它对**每一件**内容物都返回 false，与目的地、与过滤器都无关
+                // ⇒ 正确答案就是"全部 Remove"，不需要问 HasStrictlyBetterDestination，
+                // 也不能走下面那条 `!core.Accepts(t)` 的退回原版分支（断电后 Accepts 恒假，
+                // 那样每 tick 会对满核心逐件跑一次完整储存搜索）。
+                bool sourceOff = !core.HaulSourceEnabled;
+
+                if (!sourceOff && HasStrictlyBetterDestination(core))
                 {
                     int now = GenTicks.TicksGame;
                     if (now - core.lastHaulSweepTick < FallbackInterval) return false;
@@ -100,8 +118,8 @@ namespace DigitalStorage.Performance
                     Thing t = held[i];
                     if (t == null) continue;
                     // 过滤器不再收它 ⇒ 原版会把它标成"该搬出去"（这正是容器能靠原版搬运工取空的那条路），
-                    // 只有原版能回答，交给它。
-                    if (!core.Accepts(t)) return true;
+                    // 只有原版能回答，交给它。（源已关掉时这条路本来就被原版那道门堵死了，见上。）
+                    if (!sourceOff && !core.Accepts(t)) return true;
                     haulables.Remove(t);
                     saved++;
                 }

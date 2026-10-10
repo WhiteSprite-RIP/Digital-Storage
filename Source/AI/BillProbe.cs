@@ -205,6 +205,11 @@ namespace DigitalStorage.AI
             bool pawnOk = plan.lines.Count > 0 && plan.lines[0].Bill != null
                 ? SafeAllowed(plan.lines[0].Bill, w)
                 : SafeAllowedTransient(recipe, bench, w);
+            // 我们查的是**自己临时造的** bill（MakeLine / SafeAllowedTransient 都是
+            // `new Bill_Production(recipe)`），它身上不可能有小人限定：`allowedSkillRange` 默认
+            // (0,20)（Bill.cs:35）、`pawnRestriction`/`slavesOnly`/`mechsOnly`/`nonMechsOnly` 全空
+            // （Bill.cs:234-271，Bill_Production 不重写 PawnAllowedToStartAnew）。
+            // ⇒ 现实中唯一能走到这里的是"配方只允许机械师"（mechanitorOnlyRecipe + 假工人不是机械师）。
             if (!pawnOk) return "DS_BA_Block_Restricted";
 
             // 交互格被堵住/被禁止：原版 JobOnThing 在这里返回 null，与"缺料"是两件事。

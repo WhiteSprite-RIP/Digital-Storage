@@ -51,12 +51,18 @@ namespace DigitalStorage.HarmonyPatches
     {
         private static bool Prefix(Thing t, out string reason, ref bool __result)
         {
-            // 非我方容器 / 已在场上：原样交给原版。
-            if (t.Spawned || !(t.ParentHolder is Building_StorageCore))
+            Building_StorageCore core = t.ParentHolder as Building_StorageCore;
+            if (t.Spawned || core == null)
             {
-                // 只为满足编译器的 out 赋值规则：交给原版后，原版必定会重新给 reason 赋值。
                 reason = null;
                 return true;
+            }
+
+            if (!core.IsUsableNow || !core.HaulSourceEnabled)
+            {
+                reason = null;
+                __result = false;
+                return false;
             }
 
             IntVec3 positionHeld = t.PositionHeld;
