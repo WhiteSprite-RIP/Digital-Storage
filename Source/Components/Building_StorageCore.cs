@@ -136,20 +136,58 @@ namespace DigitalStorage.Components
 
         public bool HaulDestinationEnabled => haulDestinationEnabled && IsUsableNow;
 
-        // 已有库存只检查筛选, 入库再检查电力和容量
+        // 已有库存只检查筛选, 入库再检查入库开关/电力/筛选/容量
         public bool Accepts(Thing t)
         {
             if (t == null || t.def == null) return false;
             if (!Spawned) return false;
-            if (!haulDestinationEnabled) return false;
 
-            StorageSettings st = GetStoreSettings();
-            bool allowed = (st == null || st.filter == null) || st.filter.Allows(t);
+            // 已在核心里的：**只看筛选**。刻意不看入库开关与电力 ——
+            // 否则"关掉入库"会让原版把它们判成"不在有效储存"，搬运工就会把核心搬空。
+            if (ReferenceEquals(t.ParentHolder, this)) return FilterAllows(t);
 
-            if (ReferenceEquals(t.ParentHolder, this)) return allowed;
-
-            if (!allowed || !Powered) return false;
+            if (!AllowsInsert(t)) return false;
             return innerContainer.GetCountCanAccept(t) > 0;
+        }
+
+        /// <summary>筛选器那一问（<c>Allows</c> 的包装；<see cref="Accepts"/> 与
+        /// <see cref="AllowsInsert"/> 共用，避免两套判据漂移）。</summary>
+        private bool FilterAllows(Thing t)
+        {
+            StorageSettings st = GetStoreSettings();
+            return (st == null || st.filter == null) || st.filter.Allows(t);
+        }
+
+        /// <summary>
+        /// <b>入库方向的玩家规则</b>：入库开关 + 电力 + 筛选（容量由容器自己答）。
+        ///
+        /// <para>为什么必须单独抽出来：<c>IHaulDestination.Accepts</c> 只在**选目的地**时被问
+        /// （<c>StoreUtility.TryFindBestBetterStorageFor</c>），而真正的插入动作走
+        /// <c>ThingOwner.TryAdd</c> —— 原版 <c>Toils_Haul.DepositHauledThingInContainer</c> 如此，
+        /// "先组批、再一件件塞"的搬运 mod 更是如此：Pick Up And Haul 的
+        /// <c>JobDriver_UnloadYourHauledInventory</c> 组批时只问
+        /// <c>ThingOwner.CanAcceptAnyOf</c>（= <c>GetCountCanAccept &gt; 0</c>，<b>只看容量</b>），
+        /// 从不问 <c>Accepts</c> ⇒ 玩家明确不收的东西会被这样塞进核心。
+        /// 所以这套判据要同时落在插入漏斗上（<see cref="Core.CoreStorageContainer.TryAdd"/>）。</para>
+        /// </summary>
+        internal bool AllowsInsert(Thing t)
+        {
+            if (t == null || t.def == null) return false;
+            if (!haulDestinationEnabled) return false;
+            if (!Powered) return false;
+            return FilterAllows(t);
+        }
+
+        /// <summary>
+        /// <b>恢复性插入的唯一入口</b>（读档 / 3.0 迁移）：绕开上面的玩法规则，
+        /// 容量由调用方自己判（迁移自己写着 <c>Count &lt; maxStacks</c>）。
+        /// 与 <c>Accepts</c> 分开是刻意的：恢复不是"玩家在入库"。
+        /// </summary>
+        internal void AddRestored(Thing t)
+        {
+            if (t == null) return;
+            if (innerContainer is CoreStorageContainer container) container.AddLoaded(t);
+            else innerContainer?.TryAdd(t, true);
         }
 
 

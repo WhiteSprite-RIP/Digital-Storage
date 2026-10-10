@@ -83,8 +83,11 @@ namespace DigitalStorage.Compatibility
                     t.stackCount = take;
                     remaining -= take;
 
-                    if (target.Count < core.maxStacks && target.TryAdd(t, true))
+                    if (target.Count < core.maxStacks)
                     {
+                        // ★ 走"恢复性插入"：迁移不是玩家在入库，必须绕开筛选/电力/入库开关那套规则
+                        //   （容量由上面这句自己判）。走 TryAdd 的话，未通电的旧档会被整套倒在地上。
+                        core.AddRestored(t);
                         stacks++;
                         units += take;
                     }
