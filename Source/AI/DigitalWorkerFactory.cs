@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using RimWorld;
 using Verse;
 
@@ -48,6 +49,8 @@ namespace DigitalStorage.AI
                 {
                     p.story.traits.allTraits.Clear();
                 }
+                // ②b 随机**背景**同样会禁技能，而且是更隐蔽的那一半：见 NeutralizeBackstories
+                NeutralizeBackstories(p);
                 if (p.relations != null)
                 {
                     p.relations.ClearAllRelations();
@@ -67,12 +70,118 @@ namespace DigitalStorage.AI
                 {
                     p.workSettings.EnableAndInitialize();
                 }
+
+                WarnIfSkillsStillDisabled(p);
                 return p;
             }
             catch (Exception e)
             {
                 Log.Error("[DigitalStorage] 生成数字工人失败：" + e);
                 return null;
+            }
+        }
+
+        // ===================================================================
+        // ②b 背景：随机背景同样会禁技能（而且是隐蔽的那一半）
+        // ===================================================================
+
+        private static BackstoryDef safeChildhood;
+        private static BackstoryDef safeAdulthood;
+        private static bool backstoriesResolved;
+
+        /// <summary>
+        /// 把两个背景槽位换成**不禁任何工作标签**的背景。
+        ///
+        /// <para><b>为什么非换不可</b>：工人是 <c>PawnGenerator.GeneratePawn(PawnKindDefOf.Colonist, ...)</c>
+        /// 随机生成的，背景随之随机。而 <c>SkillRecord.GetLevel()</c> 在 <c>TotallyDisabled</c> 时
+        /// **直接 return 0**（<c>SkillRecord.cs:336-339</c>）；<c>TotallyDisabled</c> ←
+        /// <c>SkillDef.IsDisabled(pawn.CombinedDisabledWorkTags, pawn.GetDisabledWorkTypes())</c>
+        /// （<c>SkillRecord.cs:419-422</c>），而 <c>CombinedDisabledWorkTags</c> 含**背景**的
+        /// <c>workDisables</c>（<c>Pawn_StoryTracker.cs:264-283</c>）。
+        /// ⇒ 抽到"禁手工 / 禁采矿"的背景时，下面把 <c>SkillRecord.Level</c> 写成多少都白写：
+        /// 读出来仍是 <b>0</b> ⇒ 账单报「资质不够」（<c>RecipeDef.FirstSkillRequirementPawnDoesntSatisfy</c>），
+        /// 采矿 yield 则走 disabled 分支。而假工人**不进存档**，每次读档重新随机 ⇒ 症状"时好时坏"。</para>
+        ///
+        /// <para>光清特质（<see cref="Create"/> 里上一段）盖不住这条来源。背景也**不能置 null**：
+        /// <c>Pawn_StoryTracker.Childhood</c> 的 setter 直接解引用 <c>value.spawnCategories</c>
+        /// （<c>Pawn_StoryTracker.cs:55</c>）⇒ 只有"换成一个安全的 def"这一条路。</para>
+        ///
+        /// <para><b>什么算安全</b>：<c>workDisables == WorkTags.None</c> 即够。技能被判禁有两条路
+        /// （<c>SkillDef.cs:44-67</c>）：① <c>disablingWorkTags</c> 命中组合标签；② 该技能关联的
+        /// <b>全部</b>工作类型都被禁。背景一个标签都不禁 ⇒ 两条都不成立。成年 pawn 再排掉
+        /// <c>spawnCategories</c> 带 "Child" 的（挂了原版会 <c>Log.Warning</c>）。</para>
+        ///
+        /// <para>取最小 <c>defName</c> 只为**确定性**（同一存档每次读档落在同一个背景），
+        /// 与"哪个背景更好"无关 —— 技能等级由下面统一写死。</para>
+        /// </summary>
+        private static void NeutralizeBackstories(Pawn p)
+        {
+            try
+            {
+                if (p == null || p.story == null) return;
+
+                if (!backstoriesResolved)
+                {
+                    backstoriesResolved = true;   // 先置位：即便下面抛了也不反复重扫 def 表
+                    safeChildhood = SafeBackstory(BackstorySlot.Childhood);
+                    safeAdulthood = SafeBackstory(BackstorySlot.Adulthood);
+                }
+
+                if (safeChildhood != null && !ReferenceEquals(p.story.Childhood, safeChildhood))
+                    p.story.Childhood = safeChildhood;
+                if (safeAdulthood != null && !ReferenceEquals(p.story.Adulthood, safeAdulthood))
+                    p.story.Adulthood = safeAdulthood;
+            }
+            catch (Exception e)
+            {
+                Log.ErrorOnce("[DigitalStorage] 数字工人背景替换失败（沿用随机背景继续）：" + e, 0x44534256);
+            }
+        }
+
+        /// <summary>def 表里挑一个不禁任何工作标签的背景；没有（极端 mod 集）返回 null。</summary>
+        private static BackstoryDef SafeBackstory(BackstorySlot slot)
+        {
+            List<BackstoryDef> all = DefDatabase<BackstoryDef>.AllDefsListForReading;
+            BackstoryDef best = null;
+
+            for (int i = 0; i < all.Count; i++)
+            {
+                BackstoryDef b = all[i];
+                if (b == null || b.slot != slot) continue;
+                if (b.workDisables != WorkTags.None) continue;
+                if (slot == BackstorySlot.Childhood && b.IsPlayerColonyChildBackstory) continue;
+                if (best == null || string.CompareOrdinal(b.defName, best.defName) < 0) best = b;
+            }
+
+            if (best == null)
+            {
+                Log.WarningOnce("[DigitalStorage] 找不到不禁任何工作标签的 " + slot
+                    + " 背景：数字工人会沿用随机背景，技能可能被读成 0。", 0x44534257);
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// 自证：背景（②b）+ 特质（②）都清完之后，技能不该还剩 <c>TotallyDisabled</c> 的。
+        /// 还剩就说明来源是**基因 / hediff**（<c>Pawn.CombinedDisabledWorkTags</c> 的另外两路），
+        /// 这条日志是"资质不够"复发时的第一现场。
+        /// </summary>
+        private static void WarnIfSkillsStillDisabled(Pawn p)
+        {
+            if (!DigitalStorage.Settings.DigitalStorageSettings.enableDebugLog) return;
+            if (p == null || p.skills == null || p.skills.skills == null) return;
+
+            string names = null;
+            for (int i = 0; i < p.skills.skills.Count; i++)
+            {
+                SkillRecord s = p.skills.skills[i];
+                if (s == null || s.def == null || !s.TotallyDisabled) continue;
+                names = (names == null) ? s.def.defName : (names + ", " + s.def.defName);
+            }
+            if (names != null)
+            {
+                Log.WarningOnce("[DigitalStorage] 数字工人仍有被禁的技能（" + names
+                    + "）：背景已换成不禁工作标签的，来源应在基因或 hediff。", 0x44534258);
             }
         }
     }

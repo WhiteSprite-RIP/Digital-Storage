@@ -99,7 +99,7 @@
   <DS_BA_BenchBusy>A colonist is using this bench</DS_BA_BenchBusy>
   <DS_BA_Block_Material>Missing material (not enough inside the core)</DS_BA_Block_Material>
   <DS_BA_Block_Skill>Skill too low (recipe needs more)</DS_BA_Block_Skill>
-  <DS_BA_Block_Restricted>This recipe is restricted to a specific pawn; the proxy will not take it</DS_BA_Block_Restricted>
+  <DS_BA_Block_Restricted>This bill does not allow this worker to start (pawn-restricted or mechanitor-only)</DS_BA_Block_Restricted>
   <DS_BA_Block_Spot>The bench's interaction cell is blocked or forbidden</DS_BA_Block_Spot>
   <DS_BA_AddTitle>Add a crafting recipe (from benches in range)</DS_BA_AddTitle>
   <DS_BA_Forever>forever</DS_BA_Forever>
