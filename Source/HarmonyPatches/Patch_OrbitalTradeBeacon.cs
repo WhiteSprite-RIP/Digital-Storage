@@ -25,9 +25,30 @@ namespace DigitalStorage.HarmonyPatches
                 }
             }
 
-            foreach (Thing thing in DigitalStorageTradeUtility.CoreContents(map, trader))
+            // ★ 追加部分必须先在 try/catch 里**物化**，再 yield。
+            // postfix 返回的是**惰性迭代器**：一旦在枚举过程中抛异常，异常会穿过原版的 foreach，
+            // 把整张交易表清空（原版那个 foreach 没有兜底）—— 见本文件顶部的类注释。
+            // ⚠️ 按身份去重是必要的：原版自己也会从信标范围内的容器里产出内容物
+            // （TradeUtility.cs:112-133），重复列出会让同一件货在交易表里出现两次。
+            List<Thing> additions;
+            try
             {
-                if (yielded.Add(thing)) yield return thing;
+                additions = new List<Thing>();
+                foreach (Thing thing in DigitalStorageTradeUtility.CoreContents(map, trader))
+                {
+                    if (thing != null && yielded.Add(thing)) additions.Add(thing);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.ErrorOnce("[DigitalStorage] 追加核心内容物到交易列表时抛异常"
+                    + "（已降级为只显示原版内容，交易列表不会因此变空）: " + e, 0x5D51A);
+                additions = null;
+            }
+
+            if (additions != null)
+            {
+                for (int i = 0; i < additions.Count; i++) yield return additions[i];
             }
         }
     }
