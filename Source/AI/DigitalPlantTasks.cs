@@ -74,41 +74,37 @@ namespace DigitalStorage.AI
                     : StatDefOf.PlantHarvestYield;
                 float statValue = pawn.GetStatValue(yieldStat);
 
-                if (pawn.RaceProps.Humanlike && plant.def.plant.harvestFailable && !plant.Blighted && Rand.Value > statValue)
+                // ⚠️ 这里**没有**原版那条"收获失败"掷骰（JobDriver_PlantWork.cs:70：
+                //    `Rand.Value > statValue` ⇒ 整株作物白收、只留一个红字气泡）。
+                //    代理是机器："活干完了就该有产出"；高技能 statValue > 1 的多产奖励照旧保留。
+                //    全局口径（含殖民者）见 Settings.WorkFailureTuner。
+                int num = plant.YieldNow();
+                if (statValue > 1f)
                 {
-                    // 不用 pawn.DrawPos：假 pawn 的 DrawPos 虽然已安全，但没必要碰它
-                    MoteMaker.ThrowText(plant.DrawPos, map, "TextMote_HarvestFailed".Translate(), 3.65f);
+                    num = GenMath.RoundRandom(num * statValue);
                 }
-                else
+                if (num > 0)
                 {
-                    int num = plant.YieldNow();
-                    if (statValue > 1f)
+                    Thing thing = ThingMaker.MakeThing(plant.def.plant.harvestedThingDef);
+                    thing.stackCount = num;
+                    Find.QuestManager.Notify_PlantHarvested(pawn, thing);
+                    // 落点走 GenPlace ⇒ 代理建筑 tick 期间的 DigitalDropRedirect 会把它直塞最近的核心
+                    GenPlace.TryPlaceThing(thing, plant.Position, map, ThingPlaceMode.Near);
+                    if (pawn.records != null)
                     {
-                        num = GenMath.RoundRandom(num * statValue);
+                        pawn.records.Increment(RecordDefOf.PlantsHarvested);
                     }
-                    if (num > 0)
+                }
+                if (plant.HarvestableNow)
+                {
+                    List<ThingComp> comps = plant.AllComps;
+                    for (int i = 0; i < comps.Count; i++)
                     {
-                        Thing thing = ThingMaker.MakeThing(plant.def.plant.harvestedThingDef);
-                        thing.stackCount = num;
-                        Find.QuestManager.Notify_PlantHarvested(pawn, thing);
-                        // 落点走 GenPlace ⇒ 代理建筑 tick 期间的 DigitalDropRedirect 会把它直塞最近的核心
-                        GenPlace.TryPlaceThing(thing, plant.Position, map, ThingPlaceMode.Near);
-                        if (pawn.records != null)
+                        foreach (ThingDefCountClass extra in comps[i].GetAdditionalHarvestYield())
                         {
-                            pawn.records.Increment(RecordDefOf.PlantsHarvested);
-                        }
-                    }
-                    if (plant.HarvestableNow)
-                    {
-                        List<ThingComp> comps = plant.AllComps;
-                        for (int i = 0; i < comps.Count; i++)
-                        {
-                            foreach (ThingDefCountClass extra in comps[i].GetAdditionalHarvestYield())
-                            {
-                                Thing extraThing = ThingMaker.MakeThing(extra.thingDef);
-                                extraThing.stackCount = extra.count;
-                                GenPlace.TryPlaceThing(extraThing, plant.Position, map, ThingPlaceMode.Near);
-                            }
+                            Thing extraThing = ThingMaker.MakeThing(extra.thingDef);
+                            extraThing.stackCount = extra.count;
+                            GenPlace.TryPlaceThing(extraThing, plant.Position, map, ThingPlaceMode.Near);
                         }
                     }
                 }
@@ -198,9 +194,17 @@ namespace DigitalStorage.AI
     // ==========================================================================================
     public class DigitalTaskAdapter_GrowerSow : DigitalTaskAdapter_CellOnly
     {
+        /// <summary>只认 Growing（见 <see cref="DigitalTaskAdapter.HomeWorkTypes"/>）。</summary>
+        private static readonly string[] Homes = { "Growing" };
+
         public override Type WorkGiverClass
         {
             get { return typeof(WorkGiver_GrowerSow); }
+        }
+
+        public override string[] HomeWorkTypes
+        {
+            get { return Homes; }
         }
 
         public override DigitalTask MakeCellTask(IntVec3 cell, Map map, Pawn pawn, WorkGiver_Scanner scanner, CompDigitalWorker comp)
@@ -360,9 +364,18 @@ namespace DigitalStorage.AI
     // ==========================================================================================
     public class DigitalTaskAdapter_GrowerHarvest : DigitalTaskAdapter_CellOnly
     {
+        /// <summary>Growing —— 外加 Complex Jobs 把 <c>GrowerHarvest</c> 搬去的 <c>FSFHarvesting</c>
+        /// （见 <see cref="DigitalTaskAdapter.HomeWorkTypes"/>；不装那个 mod 时这个 defName 不存在）。</summary>
+        private static readonly string[] Homes = { "Growing", "FSFHarvesting" };
+
         public override Type WorkGiverClass
         {
             get { return typeof(WorkGiver_GrowerHarvest); }
+        }
+
+        public override string[] HomeWorkTypes
+        {
+            get { return Homes; }
         }
 
         public override DigitalTask MakeCellTask(IntVec3 cell, Map map, Pawn pawn, WorkGiver_Scanner scanner, CompDigitalWorker comp)

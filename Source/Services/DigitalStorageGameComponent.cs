@@ -61,13 +61,25 @@ namespace DigitalStorage.Services
         public override void FinalizeInit()
         {
             base.FinalizeInit();
-            if (shown40Letter) return;
 
-            shown40Letter = true;
-            Find.LetterStack.ReceiveLetter(
-                "DigitalStorage_Letter40_Label".Translate(),
-                "DigitalStorage_Letter40_Text".Translate(),
-                LetterDefOf.NeutralEvent);
+            // B7 / 审计 2026-10-17：跨档静态表按 thingIDNumber 记，换档必须清
+            //（否则上一档的编号会命中新档里无关的东西）。四张表都是"运行时加速器"，
+            // 清空只丢一点缓存，不影响任何已存状态。
+            Components.CompAutoIngest.ClearSessionCaches();
+            AI.BillBenchClaims.ClearAll();
+            AI.CraftIngredientClaims.Clear();
+
+            if (!shown40Letter)
+            {
+                shown40Letter = true;
+                Find.LetterStack.ReceiveLetter(
+                    "DigitalStorage_Letter40_Label".Translate(),
+                    "DigitalStorage_Letter40_Text".Translate(),
+                    LetterDefOf.NeutralEvent);
+            }
+
+            // 与 Pick Up And Haul 不再互斥（2026-10-18 改为真兼容，结论见 PickUpAndHaulCompat 类注释），
+            // 那封「每次进档都弹」的红信已删除 —— 兼容改动本身不需要玩家做任何事。
         }
 
         public override void ExposeData()

@@ -47,18 +47,28 @@ namespace DigitalStorage.AI
         /// <list type="number">
         /// <item><b>真的产出东西</b> —— 有 <c>products</c> 或有 <c>specialProducts</c>（熔炼/屠宰/切石）。
         ///   手术、植入体这类 <c>products</c> 为空的配方在建筑上本来也不会出现，这里再挡一道。</item>
-        /// <item><b>不需要未完成品</b> —— <c>UsesUnfinishedThing</c>（艺术/雕塑/生物塑型）要先造 UFT，
-        ///   是另一条链，v1 不做（用户拍板）。</item>
+        /// <item><b>未完成品（UFT）配方：现在能做</b> —— <c>UsesUnfinishedThing</c>（衣物、雕塑、艺术，
+        ///   以及 mod 的同类配方）。做法见 <see cref="BillProbe"/> 的 <c>WorkAmountFor</c>：原版把 UFT
+        ///   当作"跨 job 的进度载体"，而制作代理的进度本来就存在 <c>CraftLine</c> 上、一轮做完
+        ///   ⇒ <b>代理不造 UFT，直接出成品</b>（不会在地上留半成品、也不会出现"幽灵作者"的报废件）。</item>
         /// <item><b>不是手术</b> —— 手术配方的 <c>recipeUsers</c> 是人不是建筑，正常进不来，
         ///   但 mod 可能塞进来，挡一道便宜。</item>
         /// </list>
         /// 注意：**研究门槛（<c>RecipeDef.AvailableNow</c>）不在这里过滤** —— 它随研究进度变化，
         /// 而本方法按 def 缓存。研究门槛在 <see cref="MenuRecipes"/> 每次扫描时过滤。
+        /// <para>
+        /// <b>2026-10-18 起允许 <c>UsesUnfinishedThing</c>（原版仿生体一整类）</b>：以前挡掉它们，
+        /// 结果「精密装配台能做的 60 条配方里 57 条看不见」。现在按「一步成型」处理 ——
+        /// 不造未完成品（<c>UnfinishedThing</c>），直接调 <c>GenRecipe.MakeRecipeProducts</c> 出最终产物
+        /// （原版这条链本来就是「造 UFT → 再加工完成」，两段消耗的是同一批原料；
+        /// <c>MakeRecipeProducts</c> 只看 <c>recipeDef.products</c>，不关心 UFT，所以跳过第一段是安全的）。
+        /// </para>
         /// </summary>
         private static bool IsAutomationCandidate(RecipeDef r)
         {
             if (r == null) return false;
-            if (r.UsesUnfinishedThing) return false;
+            // ⚠️ 这里**故意不再**挡 r.UsesUnfinishedThing（旧版是 `if (r.UsesUnfinishedThing) return false;`）。
+            //    UFT 配方改由 BillProbe 按"一步做到成品"的方式支持；不要把它加回来。
             if (r.IsSurgery) return false;
             bool produces = (r.products != null && r.products.Count > 0)
                 || (r.specialProducts != null && r.specialProducts.Count > 0);
@@ -93,5 +103,40 @@ namespace DigitalStorage.AI
         }
 
         private static readonly HashSet<RecipeDef> tmpSeen = new HashSet<RecipeDef>();
+
+        /// <summary>
+        /// <b>「为什么只显示这么几个配方」的现场证据</b>（社区反馈 2026-10-18 第 5 条）。
+        ///
+        /// <para>面板底部原来只有"台子 N 台 / 可做配方 M 个"，玩家看不出剩下的去哪了：
+        /// 是被研究挡了、被"需要未完成品"挡了，还是这台机器本来就没那么多配方。
+        /// 这里按原版同一个口径（<c>ThingDef.AllRecipes</c>）把候选拆成三段报数。</para>
+        /// </summary>
+        public static void Survey(HashSet<ThingDef> benchDefs, out int total, out int unsupported,
+            out int researchLocked, out int available)
+        {
+            total = 0;
+            unsupported = 0;
+            researchLocked = 0;
+            available = 0;
+            if (benchDefs == null || benchDefs.Count == 0) return;
+
+            HashSet<RecipeDef> seen = tmpSeen;
+            seen.Clear();
+            foreach (ThingDef def in benchDefs)
+            {
+                List<RecipeDef> rs = def.AllRecipes;
+                if (rs == null) continue;
+                for (int i = 0; i < rs.Count; i++)
+                {
+                    RecipeDef r = rs[i];
+                    if (r == null || !seen.Add(r)) continue;
+                    total++;
+                    if (!IsAutomationCandidate(r)) { unsupported++; continue; }
+                    if (!r.AvailableNow) { researchLocked++; continue; }
+                    available++;
+                }
+            }
+            seen.Clear();
+        }
     }
 }

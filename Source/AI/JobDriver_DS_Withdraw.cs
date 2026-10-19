@@ -53,6 +53,15 @@ namespace DigitalStorage.AI
         /// </summary>
         public override bool TryMakePreToilReservations(bool errorOnFailed)
         {
+            // 【B6 / 审计 2026-10-17】现场规划必须在这里做，不能等 Notify_Starting。
+            //
+            // Pawn_JobTracker.StartJob 的顺序是 `:336 TryMakePreToilReservations` → `:368 Notify_Starting`，
+            // 也就是说：规划如果留在 Notify_Starting，那么这一趟**预订时** job.targetB/C 还是空的、
+            // job.count 还是 0 ⇒ 源料堆一件都没订上（`reserveCount` 落到 -1、`src == null` 直接跳过），
+            // 同一堆料可以被两个小人在同一帧各订一份，第二个到现场才发现被掏空。
+            // 规划提前后，下面按真实数量订源堆，多个小人仍然各订同一大堆的一部分（累加语义）。
+            EnsurePlanned();
+
             // 按**本次要取的数量**订，而不是整堆：ReservationManager 会把同目标上别人已订的
             // stackCount 累加后比较 ⇒ 多个 pawn 能各订同一大堆的一部分，工地吞吐不会退化成串行。
             int reserveCount = job.count > 0 ? job.count : -1;
@@ -73,24 +82,30 @@ namespace DigitalStorage.AI
         {
             base.Notify_Starting();
 
+            // 正常情况下 TryMakePreToilReservations 里已经规划好了；这里只兜底 + 判死。
+            EnsurePlanned();
+
+            if (job.count <= 0 || SourceThing == null) EndJobWith(JobCondition.Incompletable);
+        }
+
+        /// <summary>
+        /// 把"蓝图 / Frame → 核心里的哪种材料、取多少"填进 job（幂等）。
+        ///
+        /// 只填不判死：失败时保持未规划，交给 <c>FailOn(SourceThing == null)</c> 或
+        /// <see cref="Notify_Starting"/> 干净退出 —— 这是 <see cref="TryMakePreToilReservations"/>
+        /// 不能返回 false 的代价（见上面那段说明）。
+        /// </summary>
+        private void EnsurePlanned()
+        {
             // 右键路径：调用方已经把 Thing + count 放进 job 了
             if (job.count > 0 && SourceThing != null) return;
 
-            // 构造场景：现场规划材料（蓝图 / Frame → 容器里凑得出的那种）
             Thing target = job.GetTarget(TargetIndex.A).Thing;
             IConstructible constructible = target as IConstructible;
-            if (constructible == null)
-            {
-                EndJobWith(JobCondition.Incompletable);
-                return;
-            }
+            if (constructible == null) return;
 
             var plan = ConstructMaterialPlanner.TryPlan(constructible, pawn, job.playerForced, pawn.Map);
-            if (plan == null)
-            {
-                EndJobWith(JobCondition.Incompletable);
-                return;
-            }
+            if (plan == null) return;
 
             Thing src = plan.Value.thing;
             job.SetTarget(TargetIndex.B, src);
@@ -128,10 +143,13 @@ namespace DigitalStorage.AI
                 yield return Toils_Goto.GotoThing(TargetIndex.A, PathEndMode.ClosestTouch);
             }
 
-            // 3) 蓝图 → Frame（原版 HaulToContainer 同款，解决 #5）
+            // 3) 地形蓝图：先拆掉这一格的旧地板（原版交付层那一步，见 RemoveExistingFloor 的注释）
+            yield return RemoveExistingFloor();
+
+            // 4) 蓝图 → Frame（原版 HaulToContainer 同款，解决 #5）
             yield return Toils_Construct.MakeSolidThingFromBlueprintIfNecessary(TargetIndex.A, TargetIndex.None);
 
-            // 4) 塞容器优先（解决 #1 搬运死循环），失败则落地 + 移除 haul 标记
+            // 5) 塞容器优先（解决 #1 搬运死循环），失败则落地 + 移除 haul 标记
             yield return PlaceHauled();
         }
 
@@ -162,6 +180,44 @@ namespace DigitalStorage.AI
                 if (pawn.HasReserved(dest, job)) return;     // 已经是我的
                 if (pawn.Reserve(dest, job, 1, -1, null, false)) return; // 再试一次（errorOnFailed:false）
                 EndJobWith(JobCondition.Incompletable);      // 别人订着 ⇒ 让工作分配重新挑一个
+            };
+            return toil;
+        }
+
+        /// <summary>
+        /// 地形蓝图（地板 / 地基）那一格的「先拆旧地板」。
+        ///
+        /// <para><b>原版在哪做的</b>：<c>WorkGiver_ConstructDeliverResourcesToBlueprints.JobOnThing</c>（<c>:89-93</c>）
+        /// 对地形蓝图**先**返回一个 <c>JobDefOf.RemoveFloor</c>（<c>ignoreDesignations:true</c>），
+        /// 由 <c>JobDriver_RemoveFloor.DoEffect</c> → <c>TerrainGrid.RemoveTopLayer</c> 拆掉旧地板（材料掉落），
+        /// 下一趟才送料 → 转框 → 完成时 <c>SetFoundation</c> 才成立。
+        /// 殖民者走我们的取料作业（本 WorkGiver / <c>Patch_ResourceDeliverJobFor</c> 派发）绕过了那一步
+        /// ⇒ 这里补上；否则完成时 <c>SetFoundation</c> 会因为「there is an under terrain there」被拒，
+        /// 而那时框已经 <c>Destroy</c>（料与工全丢）。</para>
+        ///
+        /// <para>纯 Instant：本作业本来就是隔空取料，不该为这一步再排一次 200 工时的拆地板作业。
+        /// 清上层会让原版 <c>DoTerrainChangedEffects</c> 重算这一格，可能**取消**这一格上建不下的蓝图 / 框
+        /// ⇒ 目标没了就干净退出，绝不把手里的料塞进一个已经 Destroy 的容器。</para>
+        /// </summary>
+        private Toil RemoveExistingFloor()
+        {
+            var toil = ToilMaker.MakeToil("DS_RemoveExistingFloor");
+            toil.defaultCompleteMode = ToilCompleteMode.Instant;
+            toil.initAction = () =>
+            {
+                try
+                {
+                    Thing dest = job.GetTarget(TargetIndex.A).Thing;
+                    var constructible = dest as IConstructible;
+                    if (constructible == null) return;
+
+                    if (!DSConstructionDelivery.RemoveExistingFloorFirstIfNeeded(constructible, pawn.Map)) return;
+                    if (dest.Destroyed || !dest.Spawned) EndJobWith(JobCondition.Incompletable);
+                }
+                catch (Exception e)
+                {
+                    Log.ErrorOnce("[DigitalStorage] 地形蓝图旧地板清理失败（本格退回原版行为）：" + e, 0x5D52F);
+                }
             };
             return toil;
         }
@@ -271,8 +327,15 @@ namespace DigitalStorage.AI
                 }
                 if (actor.carryTracker.TryDropCarriedThing(dropCell, ThingPlaceMode.Near, out Thing dropped, null))
                 {
-                    if (dropped != null && !(targetThing is IConstructible))
-                        dropped.SetForbidden(true, false);
+                    // ★ 落地就进自动收纳的"别碰"窗口（300 tick）：本作业的料是**给目的地用的**，
+                    //   不是散落物。置禁止只挡得住走待搬表的那条路（ListerHaulables.ShouldBeHaulable
+                    //   会把禁止物踢出去），而构造场景**刻意不置禁止**（原版建造失败退回材料时也不带
+                    //   forbidden）⇒ 那条路上只能靠这个窗口挡住"刚放下就被吸回核心、小人再取一趟"的循环。
+                    if (dropped != null)
+                    {
+                        CompAutoIngest.MarkWithdrawn(dropped);
+                        if (!(targetThing is IConstructible)) dropped.SetForbidden(true, false);
+                    }
                 }
             };
             return toil;

@@ -120,5 +120,48 @@ namespace DigitalStorage.AI
             if (t.Faction != pawn.Faction) return false;
             return true;
         }
+
+        /// <summary>
+        /// 原版「先拆掉这一格的旧地板，再送料」的那一步。
+        ///
+        /// <para><b>原版在哪做的</b>：地形蓝图（地板 / 地基）落在"已经有可拆上层"的格子上时，
+        /// <c>WorkGiver_ConstructDeliverResourcesToBlueprints.JobOnThing</c>（<c>:89-93</c>）会**先**返回一个
+        /// <c>JobDefOf.RemoveFloor</c>（<c>ignoreDesignations:true</c>，见 <c>RemoveExistingFloorJob:348-365</c>），
+        /// 由 <c>JobDriver_RemoveFloor.DoEffect</c> 调 <c>TerrainGrid.RemoveTopLayer</c> 把旧地板拆掉（材料掉落），
+        /// **下一趟**才走 <c>ResourceDeliverJobFor</c> 送料 → 转框 → 完成时 <c>SetFoundation</c>/<c>SetTerrain</c> 才成立。</para>
+        ///
+        /// <para><b>我们为什么必须自己补</b>：我们自己的两条送料路径（数字工人的
+        /// <c>DigitalTask_Construct.TrySupplyFromCores</c>、殖民者的 <c>JobDriver_DS_Withdraw</c>，
+        /// 后者由本 WorkGiver 与 <c>Patch_ResourceDeliverJobFor</c> 派发）都**绕过了那个 WorkGiver**，
+        /// 于是旧地板没人拆：<c>Frame.CompleteConstruction</c> 里的 <c>SetFoundation</c>
+        /// 会因为「there is an under terrain there」被拒（<c>TerrainGrid.cs:337-341</c>），
+        /// 而那时框已经 <c>Destroy</c>（<c>Frame.cs:277-280</c>）⇒ 框 / 料 / 工全丢。</para>
+        ///
+        /// <para>返回 true = 这一格的上层已经清掉，调用方**本 tick 收手**、下 tick 再送料
+        /// （与原版"先拆、再送"的节奏一致）。</para>
+        ///
+        /// <para><b>与原版的两点差异（有意）</b>：①原版只在 <c>Construction</c> 工作类型的送货里做这一步
+        /// （<c>JobOnThing:85-88</c> 对非 Construction 直接 return null），而我们的取料作业本来就跨界
+        /// —— 转框、塞料都是它做的；②原版要求 pawn 没禁用「拆地板」工作类型
+        /// （<c>CanDoRemoveExistingFloorWork:110-125</c>），我们按本 mod 的白名单口径不做这道门。</para>
+        /// </summary>
+        public static bool RemoveExistingFloorFirstIfNeeded(IConstructible c, Map map)
+        {
+            var bp = c as Blueprint;
+            if (bp == null || map == null) return false;
+            // 与原版 ShouldRemoveExistingFloorFirst:339-346 同一判据：只有地形蓝图才有这个语义
+            if (!(bp.def.entityDefToBuild is TerrainDef)) return false;
+
+            TerrainGrid grid = map.terrainGrid;
+            IntVec3 pos = bp.Position;
+            if (!grid.CanRemoveTopLayerAt(pos)) return false;
+
+            // 原版 JobDriver_RemoveFloor.DoEffect:18-33 同款分支
+            TerrainDef temp = grid.TempTerrainAt(pos);
+            if (temp != null && temp.Removable) grid.RemoveTempTerrain(pos);
+            else grid.RemoveTopLayer(pos, doLeavings: true);
+            FilthMaker.RemoveAllFilth(pos, map);
+            return true;
+        }
     }
 }
