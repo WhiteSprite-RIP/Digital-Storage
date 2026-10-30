@@ -52,6 +52,13 @@ namespace DigitalStorage.Components
         /// <summary>面板"添加配方"菜单的候选（= 范围内台子能做的配方并集，随扫描刷新）。</summary>
         private readonly List<RecipeDef> unlocked = new List<RecipeDef>();
 
+        /// <summary>
+        /// 范围内台子能做、但**被研究锁着**的配方（随扫描刷新）。
+        /// 面板里灰显并写明缺哪项研究 —— 静默隐藏会让玩家以为"这个 mod 的配方不被支持"
+        /// （Mines 2.0 的矿场就是这种：建筑没研究前置，配方全挂在 <c>minecraft</c> 下）。
+        /// </summary>
+        private readonly List<RecipeDef> locked = new List<RecipeDef>();
+
         private Pawn worker;
         private int nextWorkerAttemptTick = -99999;
         private int nextScanTick;
@@ -64,15 +71,19 @@ namespace DigitalStorage.Components
         // ★ U1 组（AE2 合成 CPU 语义）：
         //   · 合成存储 = 1k / 4k / 16k / 64k —— 一次合成请求最大能有多大，装不下就拒绝提交
         //     （AE2 的 CraftingCpuLogic.submitJob 返回 TOO_SMALL ⇒ 客户端显示 CPU_TOO_SMALL）
-        //   · 并行处理单元 0..8 —— 同一个步骤最多同时占 1+单元数 张工作台（AE2 的 co-processor）
-        //   两项都进存档；老存档没有这两个节点 ⇒ 用默认 4k / 4，行为与改之前完全一致。
+        //   · 并行单元 = "同一个步骤最多同时占几张工作台"（AE2 的 co-processor）。
+        //     2026-10-21 起改成**玩家可调 1..64、默认 64**：
+        //     实际线数 = min(范围内能做且可用的台子数, 并行上限, 需求还差几件)。
+        //     以前写死 1+8=9 台，Mines 2.0 那种"14 台矿场同配方"就只能开 9 台、剩下干看着。
+        //     默认 64 = 不拦（真正的拦人的是"需求"和"范围内有几台"）。
+        //   两项都进存档。
         // =================================================================================
 
         /// <summary>合成存储档位：0 = 1k，1 = 4k，2 = 16k，3 = 64k。</summary>
         private int craftingStorageTier = 3;
 
-        /// <summary>并行处理单元数量（0..8）：同一个步骤最多同时占 1 + 这个数 张工作台。</summary>
-        private int parallelUnits = 8;
+        /// <summary>每步并行上限（1..64）：同一个配方最多同时占几张工作台。默认 64 = 不设实际限制。</summary>
+        private int parallelStepCap = 64;
 
         /// <summary>是否在地图上画出 13×13 扫描范围（gizmo 切换，进存档）。</summary>
         private bool showRange;
@@ -85,11 +96,12 @@ namespace DigitalStorage.Components
         /// <summary>缓存的实际耗电（W）；每 tick 只与 <c>PowerOutput</c> 比一次。</summary>
         private float cachedWatts = -1f;
 
-        // 三个 gizmo 的图标（源文件是 SVG，见 Tools/svg2png/；见 GizmoTex 的说明）
+        // 四个 gizmo 的图标（源文件是 SVG，见 Tools/svg2png/；见 GizmoTex 的说明）
         private Texture2D texToggle;
         private Texture2D texOverclock;
         private Texture2D texRange;
         private Texture2D texPanel;   // ★ AE2 面板 gizmo 的专用图标（之前复用 texRange ⇒ 一排三个同图标分不清）
+        private Texture2D texParallel;   // 每步并行上限（2026-10-21 新增，绿色三轨）
 
         /// <summary>台子认领表按图分桶，放手时要用同一个 map 引用。</summary>
         private Map slotsMap;
@@ -105,6 +117,10 @@ namespace DigitalStorage.Components
         // 复用的临时表
         private readonly HashSet<Thing> usedBenches = new HashSet<Thing>();
         private readonly List<CraftPlan> demandPlans = new List<CraftPlan>();
+
+        // 配线诊断（每轮 SyncLines 清零；只给开发者工具看，不进存档）
+        private int lastPickNulls;
+        private int lastClaimFails;
 
         public CompProperties_BillAutomation Props
         {
@@ -123,6 +139,12 @@ namespace DigitalStorage.Components
             get { return unlocked; }
         }
 
+        /// <summary>给"添加配方"窗口看的<b>被研究锁着</b>的配方（灰显 + 写研究名）。</summary>
+        internal IList<RecipeDef> LockedRecipes
+        {
+            get { return locked; }
+        }
+
         /// <summary>本次扫描到的台子（只读；Dev 诊断与"为什么这台没被认"用）。</summary>
         internal IList<Thing> BenchesForReading
         {
@@ -134,6 +156,14 @@ namespace DigitalStorage.Components
         {
             get { return showRange; }
         }
+
+        // ── 只读诊断口（开发者工具"为什么没配满台子"用；与 SyncLines 同一套算法）──
+        internal int DemandLinesForReading(CraftPlan p) { return DemandLines(p); }
+        internal int FreeBenchCountForReading(RecipeDef r) { return FreeBenchCountFor(r); }
+        internal int LinesUsedForReading { get { return TotalLines(); } }
+        internal int SlotCapForReading { get { return Math.Max(1, Props.maxSlots); } }
+        internal int LastPickNulls { get { return lastPickNulls; } }
+        internal int LastClaimFails { get { return lastClaimFails; } }
 
 
         /// <summary>★ 范围显示开关（原"显示范围"gizmo 的功能，挪到 AE2 面板左栏按钮）。</summary>
@@ -391,7 +421,7 @@ private void RescanBenches(Map map)
                 benchDefs.Add(t.def);
             }
 
-            CraftUnlocks.MenuRecipes(benchDefs, unlocked);
+            CraftUnlocks.MenuRecipes(benchDefs, unlocked, locked);
             MergePlayerCraftableRecipes();   // ★ 通用兼容：并入所有玩家可做的配方
         }
 
@@ -434,6 +464,14 @@ private void RescanBenches(Map map)
             for (int p = plans.Count - 1; p >= 0; p--)
             {
                 CraftPlan plan = plans[p];
+
+                // ★ 2026-10-21 用户反馈：「并行上限调小（小于当前在产数）时手不会少，从少往多调正常」。
+                //   原因是这个上限过去**只管加不管收** —— 调小后 want < lines.Count 只会让 room 变负、
+                //   停止补线，已经在手里的线（HasWork）继续干到做完，所以手上的活与"手"都减不下来。
+                //   这里让上限**双向生效**：超出就立刻收线（优闲先收，实在都在干活才从尾部收）。
+                int capNow = Mathf.Max(1, ParallelPerStep);
+                if (plan.lines.Count > capNow) TrimLinesTo(plan, capNow);
+
                 for (int i = plan.lines.Count - 1; i >= 0; i--)
                 {
                     CraftLine line = plan.lines[i];
@@ -477,6 +515,8 @@ private void RescanBenches(Map map)
             }
 
             usedBenches.Clear();
+            lastPickNulls = 0;      // 配线诊断：每轮重新计数
+            lastClaimFails = 0;
             for (int p = 0; p < plans.Count; p++)
             {
                 CraftPlan plan = plans[p];
@@ -501,20 +541,27 @@ private void RescanBenches(Map map)
                 RefreshTargetStateIfStale(plan, map);
                 if (!plan.CanStartNewWork) continue;
 
-                // ★ U1 组：并行处理单元 = 同一个步骤最多同时占几张台子（AE2 的 co-processor）。
-                //   默认 4 ⇒ 每步最多 5 张，比"一个步骤吃掉范围内所有空闲台子"温和，也给了可调余地。
+                // ★ U1 组：并行单元 = 同一个步骤最多同时占几张台子（AE2 的 co-processor）。
+                //   2026-10-21 起玩家可在 gizmo 里调 1..64（默认 64 = 不拦）；真正的拦人的是
+                //   "范围内有几台能做这个配方"和"需求还差几件"，见下面 FreeBenchCountFor / DemandLines。
                 // ★ B1 / FIX-12（审计 2026-10-17）：再叠加 DemandLines —— 做 1 件不该占 3 台。
-                int want = Mathf.Min(FreeBenchCountFor(plan.recipe),
-                                     Mathf.Min(Mathf.Max(1, ParallelPerStep), DemandLines(plan)));
-                for (int i = plan.lines.Count; i < want && free > 0; i++)
+                // ★ 2026-10-21 **修 13/15 跑不满**：want 曾经是"还能配几条"（FreeBenchCountFor），
+                //   却拿去和 **已有线数** 比（for i = lines.Count; i < want）。于是"13 条线 + 2 张空台"
+                //   ⇒ want=2、i 从 13 起 ⇒ 循环一次都不进，永远补不上。正确口径：
+                //   want = 这一单**总共**想要几条线（并行上限 ∩ 需求），再加多少由 want - 已有 决定。
+                int demandLines = DemandLines(plan);
+                int want = Mathf.Min(Mathf.Max(1, ParallelPerStep), demandLines);
+                int room = Mathf.Min(want - plan.lines.Count, FreeBenchCountFor(plan.recipe));
+                for (int i = 0; i < room && free > 0; i++)
                 {
-                    if (plan.lines.Count >= DemandLines(plan)) continue;
+                    if (plan.lines.Count >= demandLines) break;
 
                     Thing bench = PickBench(plan.recipe);
-                    if (bench == null) continue;   // 这个配方在自己范围里没台子了
+                    if (bench == null) { lastPickNulls++; continue; }   // 这个配方在自己范围里没台子（诊断计数）
 
                     if (!BillBenchClaims.TryClaim(map, bench, this))
                     {
+                        lastClaimFails++;         // 诊断：被别的代理占着（或认领表里是无主死引用）
                         usedBenches.Add(bench);   // 别的制作代理占了 ⇒ 本轮别再挑它
                         continue;
                     }
@@ -554,6 +601,26 @@ private void RescanBenches(Map map)
             line.Bill = bill;
             line.TempStack = stack;
             return line;
+        }
+
+        /// <summary>
+        /// 把这一单的在产线数收到 <paramref name="want"/> 以内（并行上限调小时用）。
+        /// 优先收**空闲**的线（还没拿到料 ⇒ 让台子不亏任何进度），
+        /// 只有在全部都"手里有活"时才从尾部收（进度作废，但材料是完成那一刻才扣的，不会丢料）。
+        /// </summary>
+        private void TrimLinesTo(CraftPlan plan, int want)
+        {
+            if (want < 0) want = 0;
+            while (plan.lines.Count > want)
+            {
+                int victim = -1;
+                for (int i = plan.lines.Count - 1; i >= 0; i--)
+                {
+                    if (!plan.lines[i].HasWork) { victim = i; break; }
+                }
+                if (victim < 0) victim = plan.lines.Count - 1;
+                ReleaseLine(plan, victim);
+            }
         }
 
         private void ReleaseLine(CraftPlan plan, int i)
@@ -1048,7 +1115,7 @@ private void RescanBenches(Map map)
         /// 给界面看的 Job 列表（只读视图，与 <see cref="PlansForReading"/> 同规矩）。
         ///
         /// <para><b>只读就是只读</b>：这个 getter 由界面每帧调用，绝不在这里改状态。
-        /// （旧版曾在这里把 <c>craftingStorageTier</c> / <c>parallelUnits</c> 直接拉到最高档 ——
+        /// （旧版曾在这里把 <c>craftingStorageTier</c> / <c>parallelStepCap</c> 直接拉到最高档 ——
         ///  那两个字段是<b>会进存档</b>的，于是"打开面板"会悄悄改写存档内容，是实打实的脏写。
         ///  默认档位现在由字段初始化 + <see cref="PostSpawnSetup"/> 负责，见那两处。）</para>
         /// </summary>
@@ -1128,17 +1195,20 @@ private void RescanBenches(Map map)
             }
         }
 
-        /// <summary>并行处理单元数量（界面显示用）。</summary>
-        public int ParallelUnits
+        /// <summary>每步并行上限（界面显示用）：1..64。</summary>
+        public int ParallelStepCap
         {
-            get { return Mathf.Clamp(parallelUnits, 0, 8); }
+            get { return Mathf.Clamp(parallelStepCap, 1, MaxParallelStepCap); }
         }
 
-        /// <summary>同一个步骤最多同时占几张工作台（1 + 并行单元数）。</summary>
+        /// <summary>同一个步骤最多同时占几张工作台（= 并行上限）。</summary>
         public int ParallelPerStep
         {
-            get { return 1 + ParallelUnits; }
+            get { return ParallelStepCap; }
         }
+
+        /// <summary>并行上限的硬边界（与 gizmo 滑条、存档读回共用，避免三处各写一个数）。</summary>
+        public const int MaxParallelStepCap = 64;
 
         /// <summary>合成存储档位循环：1k → 4k → 16k → 64k → 1k。</summary>
         public void CycleStorageTier()
@@ -1146,10 +1216,14 @@ private void RescanBenches(Map map)
             craftingStorageTier = (craftingStorageTier + 1) % 4;
         }
 
-        /// <summary>并行处理单元 +1（到 8 回 0）。</summary>
-        public void CycleParallelUnits()
+        /// <summary>设置每步并行上限（gizmo 滑条用；自动夹在 1..64）。</summary>
+        public void SetParallelStepCap(int value)
         {
-            parallelUnits = (ParallelUnits + 1) % 9;
+            int clamped = Mathf.Clamp(value, 1, MaxParallelStepCap);
+            if (clamped == ParallelStepCap) return;
+            parallelStepCap = clamped;
+            // 调小要**立刻**收线（不等下一次 60 tick 的扫描；TrimLinesTo 在 SyncLines 里做）
+            nextScanTick = 0;
         }
 
         /// <summary>一个已建好的 Job 的"计划规模"（件）= 各步骤需要量之和，用于容量条与占用统计。</summary>
@@ -2024,7 +2098,9 @@ private void RescanBenches(Map map)
 
         private void UpdateVisuals(Map map)
         {
-            int cap = Math.Max(0, Props.maxVisualSlots);
+            // ★ 2026-10-21：0 = 不限制（默认）。用户反馈"14 台在产只看到 6 只手"，
+            //   改成一有几条线就画几只；XML 里仍可给正整数设硬顶。
+            int cap = Props.maxVisualSlots <= 0 ? int.MaxValue : Props.maxVisualSlots;
             int index = 0;
             for (int p = 0; p < plans.Count; p++)
             {
@@ -2156,6 +2232,24 @@ private void RescanBenches(Map map)
                 action = () => { CycleRange(); }
             };
 
+            // ★ 每步并行上限（2026-10-21 新增）：同一个配方最多同时占几张台子。
+            //   以前写死 1+8 = 9 台 ⇒ Mines 2.0 的 14 台矿场只能开 9 台（面板显示"在产 9/14 台"）。
+            //   现在点开是滑条 1..64，默认 64 = 不拦；真正的上限仍然是"范围内有几台 + 需求还差几件"。
+            yield return new Command_Action
+            {
+                icon = GizmoTex(ref texParallel, "UI/Gizmos/制作代理-并行"),
+                defaultLabel = "DS_BA_ParallelLabel".Translate(ParallelStepCap.ToString()),
+                defaultDesc = "DS_BA_ParallelDesc".Translate(),
+                action = () =>
+                {
+                    Find.WindowStack.Add(new Dialog_Slider(
+                        (int v) => "DS_BA_ParallelSlider".Translate(v),
+                        1, MaxParallelStepCap,
+                        (int v) => SetParallelStepCap(v),
+                        ParallelStepCap));
+                }
+            };
+
             // ★ AE2 界面入口（PR③ 新增）：gizmo 直接开新面板。
             //   —— 这一处**属于 PR③**：它引用 Window_AE2CraftPanel，必须跟界面文件同批进来，
             //      所以 PR②（纯内核）里没有这一段。
@@ -2218,11 +2312,14 @@ private void RescanBenches(Map map)
         public override void PostSpawnSetup(bool respawningAfterLoad)
         {
             base.PostSpawnSetup(respawningAfterLoad);
-            // ★ U1（用户定案）：合成存储 / 并行处理单元**不给玩家选择、一律最高档**。
-            //   老存档里可能存着旧档位（1k/4k、并行 4）⇒ 在这里（而不是只读 getter 里）拉满，
-            //   保证行为统一，又不会让"界面看数据"变成"改存档"。
+            // ★ U1（用户定案）：合成存储**一律最高档**（64k），不给玩家选择。
+            //   老存档里可能存着旧档位（1k/4k）⇒ 在这里（而不是只读 getter 里）拉满。
             craftingStorageTier = 3;   // 64k
-            parallelUnits = 8;         // 每步最多 9 张台子
+
+            // ★ 并行上限自 2026-10-21 起是玩家可调的（gizmo 滑条 1..64，默认 64 = 不拦），
+            //   所以**不能**像以前那样在这里无条件拉满 —— 那会把玩家刚调的值每次读档/重建都冲掉。
+            //   只做越界纠正：老存档的键叫 billAutoParallelUnits（1+8=9 那套），读不到新键时就是默认 64。
+            parallelStepCap = Mathf.Clamp(parallelStepCap, 1, MaxParallelStepCap);
             RecalcWatts();
         }
 
@@ -2280,9 +2377,13 @@ public override void PostExposeData()
             Scribe_Values.Look(ref enabled, "billAutoEnabled", true);
             Scribe_Values.Look(ref overclockTier, "billAutoOverclock", 0);
             Scribe_Values.Look(ref showRange, "billAutoShowRange", false);
-            // ★ U1 组：合成 CPU 的两项能力（老存档读不到 = 4k / 4 ⇒ 行为不变）
+            // ★ U1 组：合成 CPU 的两项能力
+            //   老存档读到的是 billAutoStorageTier（会被 PostSpawnSetup 拉满到 64k）
+            //   并行上限 2026-10-21 由"1+并行单元(9 台)"改成"玩家可调 1..64，默认 64 不拦"：
+            //   老存档里那条 billAutoParallelUnits **故意不读**（读回来只会把新默认值压成 9），
+            //   新键读不到就是默认 64 —— 老存档反而因此"修好"了 14 台矿场只能开 9 台的问题。
             Scribe_Values.Look(ref craftingStorageTier, "billAutoStorageTier", 3);
-            Scribe_Values.Look(ref parallelUnits, "billAutoParallelUnits", 8);
+            Scribe_Values.Look(ref parallelStepCap, "billAutoParallelStepCap", MaxParallelStepCap);
             Scribe_Collections.Look(ref plans, "billAutoPlans", LookMode.Deep);
             // ★ 第 2 步：合成 Job（= 请求 + 依赖树）。读不到就是空表 ⇒ 老存档那批订单是"无主订单"，照旧能跑能删。
             Scribe_Collections.Look(ref jobs, "billAutoJobs", LookMode.Deep);

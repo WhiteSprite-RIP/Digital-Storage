@@ -112,6 +112,8 @@
   <DS_BA_Forever>forever</DS_BA_Forever>
   <DS_BA_Remain>{0} left</DS_BA_Remain>
   <DS_BA_Lines>running {0}/{1}</DS_BA_Lines>
+    <DS_BA_LinesByDemand>only {0} left in the order</DS_BA_LinesByDemand>
+    <DS_BA_LinesByCap>parallel limit {0} benches</DS_BA_LinesByCap>
   <DS_BA_Suspend>suspend</DS_BA_Suspend>
   <DS_BA_Resume>resume</DS_BA_Resume>
   <DS_BA_Suspended>suspended</DS_BA_Suspended>
@@ -231,6 +233,9 @@
     <DS_BA_RangeLabel>Range {0}</DS_BA_RangeLabel>
     <DS_BA_RangeDesc>Click to cycle the scan range (default -> larger -> whole map -> back to default). A bigger range covers more workbenches and cores.</DS_BA_RangeDesc>
     <DS_BA_RangeWholeMap>whole map</DS_BA_RangeWholeMap>
+    <DS_BA_ParallelLabel>Parallel limit {0} benches</DS_BA_ParallelLabel>
+    <DS_BA_ParallelDesc>How many workbenches one recipe may occupy at the same time (1-64). Default 64 = effectively unlimited: the real caps are "how many benches in range can craft it" and "how many items the order still needs".\n\nThis used to be hard-capped at 9: with something like Mines 2.0 (a dozen mines all sharing one recipe) the panel showed "9/14 benches busy" and the rest just sat idle.</DS_BA_ParallelDesc>
+    <DS_BA_ParallelSlider>Up to {0} benches working per step</DS_BA_ParallelSlider>
     <DS_JOB_St_TooSmall>Crafting storage too small: {0} needs {1} items, current tier is only {2}</DS_JOB_St_TooSmall>
     <DS_JOB_SubCannotDelete>{0} is a subordinate step - delete the final product order instead</DS_JOB_SubCannotDelete>
     <DS_JOB_Submitted>Submitted craft: {0} x{1} ({2} steps)</DS_JOB_Submitted>
@@ -294,6 +299,8 @@
     <DS_AE2_NoRecipeInCat>No craftable recipes in this category</DS_AE2_NoRecipeInCat>
     <DS_AE2_NoRecipeMatch>No recipe matching "{0}"</DS_AE2_NoRecipeMatch>
     <DS_AE2_PickRecipeFirst>Pick a recipe above first</DS_AE2_PickRecipeFirst>
+    <DS_AE2_LockedTag>research needed</DS_AE2_LockedTag>
+    <DS_AE2_NeedResearch>Research this first: {0}</DS_AE2_NeedResearch>
     <DS_AE2_Submit>Submit request</DS_AE2_Submit>
     <DS_AE2_AlreadyInJob>Already in this request</DS_AE2_AlreadyInJob>
     <DS_AE2_StuffNone>Any material (whatever the core holds)</DS_AE2_StuffNone>

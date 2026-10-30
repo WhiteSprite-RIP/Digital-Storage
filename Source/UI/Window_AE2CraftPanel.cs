@@ -718,7 +718,7 @@ if (i == 1) TreeGlyph(new Rect(b.x + 4f, b.y + 4f, 15f, 15f));   // ★ 15×15�
             // ── 行5：工作台 ──
             AE2Draw.TextIn(new Rect(ri.x + LBL_X, y, VAL_X - LBL_X, ROW_H), "DS_CA_Bench".Translate().ToString(), 0f, AE2Draw.TextDimCol, TextAnchor.MiddleLeft);
             AE2Draw.TextIn(new Rect(ri.x + VAL_X, y, ri.width - VAL_X - 2f, ROW_H),
-                "DS_BA_Lines".Translate(BusyLines(p), comp.UsableBenchCountFor(p.recipe)).ToString(), 0f, AE2Draw.TextCol, TextAnchor.MiddleLeft);
+                LinesRowText(p), 0f, AE2Draw.TextCol, TextAnchor.MiddleLeft);
             y += ROW_H + 6f;
 
             // ── 进度条（青）+ 右侧百分比 ──
@@ -905,6 +905,32 @@ if (i == 1) TreeGlyph(new Rect(b.x + 4f, b.y + 4f, 15f, 15f));   // ★ 15×15�
                 if (l != null && l.HasWork) n++;
             }
             return n;
+        }
+
+        /// <summary>
+        /// 「在产 13/15 台」+ 为什么没配满。
+        /// ★ 2026-10-21 用户问"为什么 15 台只跑 13 台"：分母是「范围内可用台子」，
+        ///   分子是「这一单实际配了几条线」——差的那几台常常不是没台子，而是**订单只差几件**
+        ///   （或并行上限调小了）。把闸门直接写在后面，免得每次都要开开发者工具。
+        /// </summary>
+        private string LinesRowText(CraftPlan p)
+        {
+            int usable = comp.UsableBenchCountFor(p.recipe);
+            int busy = BusyLines(p);
+            string s = "DS_BA_Lines".Translate(busy, usable).ToString();
+            if (busy >= usable) return s;
+
+            int demand = comp.DemandLinesForReading(p);
+            if (demand < usable && p.mode != CraftPlan.ModeForever)
+            {
+                return s + "  「" + "DS_BA_LinesByDemand".Translate(demand).ToString() + "」";
+            }
+            int cap = comp.ParallelStepCap;
+            if (cap < usable)
+            {
+                return s + "  「" + "DS_BA_LinesByCap".Translate(cap).ToString() + "」";
+            }
+            return s;
         }
 
         private static string ModeShort(CraftPlan p)
@@ -1179,10 +1205,24 @@ if (i == 1) TreeGlyph(new Rect(b.x + 4f, b.y + 4f, 15f, 15f));   // ★ 15×15�
                     int n = Mathf.Min(left, th.stackCount);
                     Thing part = th.SplitOff(n);
                     if (part == null) continue;
-                    left -= n;
-                    if (!GenPlace.TryPlaceThing(part, cell, map, ThingPlaceMode.Near))
+                    // ★ 先盖章再落地：取出即"刚被取出"（与 CarryFromCore 同款护栏）。
+                    //   不盖的话自动收纳下一轮 15 tick 扫描就把它瞬移回核心 —— 玩家看到的就是
+                    //   "从核心取出来又塞回去"。落地成功后 SpawnSetup 补丁会再续一次窗口。
+                    CompAutoIngest.MarkWithdrawn(part);
+                    if (!GenPlace.TryPlaceThing(part, cell, map, ThingPlaceMode.Near, out Thing dropped))
                     {
-                        if (!held.TryAdd(part, false)) GenPlace.TryPlaceThing(part, cell, map, ThingPlaceMode.Near);
+                        // 回滚必须 canMerge:true —— false 会在有同种空槽时新开一堆（同 def 双堆、吃槽位）
+                        if (!held.TryAdd(part, true)) GenPlace.TryPlaceThing(part, cell, map, ThingPlaceMode.Near);
+                    }
+                    else
+                    {
+                        left -= n;
+                        if (dropped != null && !dropped.Destroyed)
+                        {
+                            CompAutoIngest.MarkWithdrawn(dropped);
+                            // 玩家手动掏出来的东西：置禁止，免得自动收纳 / 原版搬运工顺手送回去。
+                            dropped.SetForbidden(true, false);
+                        }
                     }
                 }
             }

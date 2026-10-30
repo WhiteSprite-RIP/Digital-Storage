@@ -91,6 +91,7 @@
     <Compile Include="Components\CompDigitalWorker.cs" />
     <Compile Include="Components\CompProperties_BillAutomation.cs" />
     <Compile Include="Components\CompBillAutomation.cs" />
+    <Compile Include="Components\TitleFoodDevTool.cs" />
 
     <Compile Include="Core\CoreTier.cs" />
     <Compile Include="Core\HaulSourceContents.cs" />
@@ -114,6 +115,7 @@
     <Compile Include="AI\DigitalPlantTasks.cs" />
     <Compile Include="AI\DigitalWorkBudget.cs" />
     <Compile Include="AI\DigitalWorkerFactory.cs" />
+    <Compile Include="AI\ForeignJobRelease.cs" />
     <Compile Include="AI\BillAutomationScope.cs" />
     <Compile Include="AI\BillBenchClaims.cs" />
     <Compile Include="AI\CraftIngredientClaims.cs" />
@@ -175,6 +177,10 @@
     <Compile Include="HarmonyPatches\Patch_BenchWhitelist_Relax.cs" />
     <Compile Include="HarmonyPatches\Patch_HaulToContainer_ConcurrentCore.cs" />
     <Compile Include="HarmonyPatches\Patch_CarryFromCore_MarkWithdrawn.cs" />
+    <!-- 4.1「取出又塞回去」：落地侧补标记（原版丢手 / 任何 SpawnSetup 都再续一次窗口） -->
+
+    <Compile Include="HarmonyPatches\Patch_Thing_SpawnSetup_RearmWithdrawn.cs" />
+    <Compile Include="HarmonyPatches\Patch_ThingOwner_TransferToCore_PartialDeposit.cs" />
     <Compile Include="HarmonyPatches\Patch_JobDriver_Equip.cs" />
     <!-- B1 医疗与生存覆盖（2026-10-17）：血原质 / 输血 / 备药备货 -->
     <Compile Include="HarmonyPatches\Patch_HemogenAdministerFromCore.cs" />
@@ -198,6 +204,8 @@
     <Compile Include="HarmonyPatches\Patch_ReservationManager_CanReserve.cs" />
     <Compile Include="HarmonyPatches\Patch_ReservationManager_CanReserve_SharedCore.cs" />
     <Compile Include="HarmonyPatches\Patch_GenPlace_DropRedirect.cs" />
+    <!-- 游离物品（MapHeld == null）不进搬运列表 + 老存档里已有的定期救回 -->
+    <Compile Include="HarmonyPatches\Patch_ListerHaulables_LimboGuard.cs" />
     <Compile Include="HarmonyPatches\Patch_Building_SubcoreScanner_SupplyFromCore.cs" />
     <Compile Include="HarmonyPatches\Patch_Building_GrowthVat_SupplyFromCore.cs" />
     <Compile Include="HarmonyPatches\Patch_PowerMultiplier.cs" />
@@ -206,6 +214,9 @@
          在地板上铺"地基"地形（逆重飞船基架 / 重型桥）会被 SetFoundation 拒绝，
          而框那时已经 Destroy ⇒ 白丢。这里补上前置清理。 -->
     <Compile Include="HarmonyPatches\Patch_Frame_CompleteConstruction.cs" />
+    <!-- 读档兜底：job 的目标在存档里"整段丢了"（保存时目标已销毁，Scribe 不写空引用）
+         ⇒ vanilla MakeNewToils 解引用 null 炸档（实机 2026-10-23 的 Save→Load NRE）。 -->
+    <Compile Include="HarmonyPatches\Patch_JobDriver_SetupToils_LoadGuard.cs" />
 
     <!-- 原版热点优化（不是本 mod 的功能补丁，纯粹治原版在"框选一堆/标记一堆"时的每帧开销） -->
     <Compile Include="Performance\Patch_SelectionDrawer_BracketCull.cs" />
